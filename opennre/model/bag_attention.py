@@ -7,7 +7,7 @@ class BagAttention(BagRE):
     Instance attention for bag-level relation extraction.
     """
 
-    def __init__(self, sentence_encoder, num_class, rel2id):
+    def __init__(self, sentence_encoder, num_class, rel2id, input_feat=False):
         """
         Args:
             sentence_encoder: encoder for sentences
@@ -64,8 +64,9 @@ class BagAttention(BagRE):
         pred = pred.item()
         rel = self.id2rel[pred]
         return (rel, score)
-    
-    def forward(self, label, scope, token, pos1, pos2, mask=None, train=True, bag_size=None):
+
+
+    def forward(self, label, scope, token, pos1, pos2, mask=None, train=True, bag_size=None, input_feat=False):
         """
         Args:
             label: (B), label of the bag
@@ -78,9 +79,9 @@ class BagAttention(BagRE):
             logits, (B, N)
         """
         if mask is not None:
-            rep = self.sentence_encoder(token, pos1, pos2, mask) # (nsum, H)
+            rep, w = self.sentence_encoder(token, pos1, pos2, mask, input_feat=input_feat) # (nsum, H)
         else:
-            rep = self.sentence_encoder(token, pos1, pos2) # (nsum, H)
+            rep, w = self.sentence_encoder(token, pos1, pos2, input_feat=input_feat) # (nsum, H)
 
         # Attention
         if train:
@@ -107,6 +108,7 @@ class BagAttention(BagRE):
                 bag_rep = (softmax_att_score.unsqueeze(-1) * rep).sum(1) # (B, bag, 1) * (B, bag, H) -> (B, bag, H) -> (B, H)
             bag_rep = self.drop(bag_rep)
             bag_logits = self.fc(bag_rep) # (B, N)
+            return bag_logits, w
         else:
             bag_logits = []
             att_score = torch.matmul(rep, self.fc.weight.data.transpose(0, 1)) # (nsum, H) * (H, N) -> (nsum, N)
@@ -118,6 +120,50 @@ class BagAttention(BagRE):
                 logit_for_each_rel = logit_for_each_rel.diag() # (N)
                 bag_logits.append(logit_for_each_rel)
             bag_logits = torch.stack(bag_logits,0) # after **softmax**
+            return bag_logits
 
-        return bag_logits
+    '''
+    def forward(self, label, scope, token, pos1, pos2, mask=None, train=True, bag_size=None, input_feat=False):
+        """
+        Args:
+            label: (B), label of the bag
+            scope: (B), scope for each bag
+            token: (nsum, L), index of tokens
+            pos1: (nsum, L), relative position to head entity
+            pos2: (nsum, L), relative position to tail entity
+            mask: (nsum, L), used for piece-wise CNN
+        Return:
+            logits, (B, N)
+        """
+        if mask is not None:
+            rep, w = self.sentence_encoder(token, pos1, pos2, mask, ) # (nsum, H)
+        else:
+            rep, w = self.sentence_encoder(token, pos1, pos2, input_fat=input_feat) # (nsum, H)
 
+        # Attention
+        if train:
+            bag_rep = []
+            query = torch.zeros((rep.size(0))).long()
+            if torch.cuda.is_available():
+                query = query.cuda()
+            for i in range(len(scope)):
+                query[scope[i][0]:scope[i][1]] = label[i]
+            att_mat = self.fc.weight.data[query] # (nsum, H)
+            att_score = (rep * att_mat).sum(-1) # (nsum)
+            if bag_size is None:
+                for i in range(len(scope)):
+                    bag_mat = rep[scope[i][0]:scope[i][1]] # (n, H)
+                    softmax_att_score = self.softmax(att_score[scope[i][0]:scope[i][1]]) # (n)
+                    bag_rep.append((softmax_att_score.unsqueeze(-1) * bag_mat).sum(0)) # (n, 1) * (n, H) -> (n, H) -> (H)
+                bag_rep = torch.stack(bag_rep, 0) # (B, H)
+            else:
+                batch_size = label.size(0)
+                rep = rep.view(batch_size, bag_size, -1) # (B, bag, H)
+                att_mat = att_mat.view(batch_size, bag_size, -1) # (B, bag, H)
+                att_score = att_score.view(batch_size, bag_size) # (B, bag)
+                softmax_att_score = self.softmax(att_score) # (B, bag)
+                bag_rep = (softmax_att_score.unsqueeze(-1) * rep).sum(1) # (B, bag, 1) * (B, bag, H) -> (B, bag, H) -> (B, H)
+            bag_rep = self.drop(bag_rep)
+            bag_logits = self.fc(bag_rep) # (B, N)
+            return bag_logits, w
+    '''

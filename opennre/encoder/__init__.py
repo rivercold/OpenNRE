@@ -4,6 +4,7 @@ from __future__ import print_function
 
 from .cnn_encoder import CNNEncoder
 from .pcnn_encoder import PCNNEncoder
+from .rnn_encoder import RNNEncoder
 from .bert_encoder import BERTEncoder, BERTEntityEncoder
 
 __all__ = [

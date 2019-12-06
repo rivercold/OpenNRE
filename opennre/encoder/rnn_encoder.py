@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch.autograd import Variable
 import torch.nn.functional as F
 
 from ..module.nn import CNN
@@ -8,7 +9,7 @@ from .base_encoder import BaseEncoder
 
 from nltk import word_tokenize
 
-class PCNNEncoder(BaseEncoder):
+class RNNEncoder(BaseEncoder):
 
     def __init__(self, 
                  token2id, 
@@ -39,18 +40,12 @@ class PCNNEncoder(BaseEncoder):
         self.drop = nn.Dropout(dropout)
         self.kernel_size = kernel_size
         self.padding_size = padding_size
-        self.act = activation_function
     
-        self.conv = nn.Conv1d(self.input_size, self.hidden_size, self.kernel_size, padding=self.padding_size)
-        self.pool = nn.MaxPool1d(self.max_length)
-        self.mask_embedding = nn.Embedding(4, 3)
-        self.mask_embedding.weight.data.copy_(torch.FloatTensor([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]))
-        self.mask_embedding.weight.requires_grad = False
-        self._minus = -100
+        self.lstm = nn.LSTM(self.input_size, hidden_size, bidirectional=True, batch_first=True)
 
-        self.hidden_size *= 3
+        self.hidden_size *= 2
 
-    def forward(self, token, pos1, pos2, mask, input_feat=False):
+    def forward(self, token, pos1, pos2, mask):
         """
         Args:
             token: (B, L), index of tokens
@@ -60,51 +55,20 @@ class PCNNEncoder(BaseEncoder):
             (B, EMBED), representations for sentences
         """
         # Check size of tensors
-        if not input_feat and (len(token.size()) != 2 or token.size() != pos1.size() or token.size() != pos2.size()):
+        if len(token.size()) != 2 or token.size() != pos1.size() or token.size() != pos2.size():
             raise Exception("Size of token, pos1 ans pos2 should be (B, L)")
-        if not input_feat:
-            w = self.word_embedding(token)
-        else:
-            w = token
-        x = torch.cat([w,
+        x = torch.cat([self.word_embedding(token),
                        self.pos1_embedding(pos1), 
                        self.pos2_embedding(pos2)], 2) # (B, L, EMBED)
-        x = x.transpose(1, 2) # (B, EMBED, L)
-        x = self.conv(x) # (B, H, L)
-
-        mask = 1 - self.mask_embedding(mask).transpose(1, 2) # (B, L) -> (B, L, 3) -> (B, 3, L)
-        pool1 = self.pool(self.act(x + self._minus * mask[:, 0:1, :])) # (B, H, 1)
-        pool2 = self.pool(self.act(x + self._minus * mask[:, 1:2, :]))
-        pool3 = self.pool(self.act(x + self._minus * mask[:, 2:3, :]))
-        x = torch.cat([pool1, pool2, pool3], 1) # (B, 3H, 1)
-        x = x.squeeze(2) # (B, 3H)
-        x = self.drop(x)
-        return x, w
-
-    def adv_forward(self, word_vectors, pos1, pos2, mask):
-        """
-        Args:
-            token: (B, L), index of tokens
-            pos1: (B, L), relative position to head entity
-            pos2: (B, L), relative position to tail entity
-        Return:
-            (B, EMBED), representations for sentences
-        """
-        # Check size of tensors
-        x = torch.cat([word_vectors,
-                       self.pos1_embedding(pos1),
-                       self.pos2_embedding(pos2)], 2) # (B, L, EMBED)
-        x = x.transpose(1, 2) # (B, EMBED, L)
-        x = self.conv(x) # (B, H, L)
-
-        mask = 1 - self.mask_embedding(mask).transpose(1, 2) # (B, L) -> (B, L, 3) -> (B, 3, L)
-        pool1 = self.pool(self.act(x + self._minus * mask[:, 0:1, :])) # (B, H, 1)
-        pool2 = self.pool(self.act(x + self._minus * mask[:, 1:2, :]))
-        pool3 = self.pool(self.act(x + self._minus * mask[:, 2:3, :]))
-        x = torch.cat([pool1, pool2, pool3], 1) # (B, 3H, 1)
-        x = x.squeeze(2) # (B, 3H)
-        x = self.drop(x)
-        return x
+        # x = x.transpose(1, 2) # (B, EMBED, L)
+        # print ("input x", x.size())
+        if torch.cuda.is_available():
+            h_0 = torch.randn(2, x.size(0), int(self.hidden_size/2)).cuda()
+            c_0 = torch.randn(2, x.size(0), int(self.hidden_size/2)).cuda()
+        h, _ = self.lstm(x, (h_0, c_0))
+        h = h[:, -1, :]
+        h = self.drop(h)
+        return h
 
     def tokenize(self, item):
         """
